@@ -50,11 +50,24 @@ document.addEventListener('DOMContentLoaded', () => {
   const treeResult = document.getElementById('tree-result');
   const colSide = document.getElementById('col-side');
 
+  // Dependency checks
+  if (typeof ApiService === 'undefined') {
+    console.error('ApiService not loaded. Check that js/api.js is loaded before js/app.js');
+  }
+  if (typeof CanvasRenderer === 'undefined') {
+    console.error('CanvasRenderer not loaded. Check that js/canvas.js is loaded before js/app.js');
+  }
+  if (typeof CentroidTracker === 'undefined') {
+    console.error('CentroidTracker not loaded. Check that js/tracker.js is loaded before js/app.js');
+  }
+
   let selectedFile = null;
   let isImage = false;
   let videoFrameResults = [];
   let currentFrameIndex = 0;
   let videoUniqueCount = 0;
+  let videoFrameImages = []; // Store blob URLs for cleanup
+  const objectURLs = new Set(); // Track all object URLs for cleanup
 
   // Tree mode state
   let currentMode = 'single'; // 'single' | 'tree'
@@ -126,6 +139,9 @@ document.addEventListener('DOMContentLoaded', () => {
   btnModeSingle.addEventListener('click', () => setMode('single'));
   btnModeTree.addEventListener('click', () => setMode('tree'));
 
+  // Store tree slot image URLs for cleanup
+  const treeSlotURLs = new Map(); // sideIndex -> objectURL
+
   // --- Tree Upload Handling ---
   function updateTreeSlot(sideIndex, file) {
     treeFiles[sideIndex] = file;
@@ -133,10 +149,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const preview = slot.querySelector('.tree-slot__preview');
     const img = slot.querySelector('.tree-slot__img');
 
+    // Revoke old URL if exists
+    if (treeSlotURLs.has(sideIndex)) {
+      revokeObjectURL(treeSlotURLs.get(sideIndex));
+      treeSlotURLs.delete(sideIndex);
+    }
+
     if (file) {
       slot.classList.add('has-file');
       preview.classList.remove('hidden');
-      img.src = URL.createObjectURL(file);
+      const url = createObjectURL(file);
+      img.src = url;
+      treeSlotURLs.set(sideIndex, url);
     } else {
       slot.classList.remove('has-file');
       preview.classList.add('hidden');
@@ -190,7 +214,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function saveTrackerSettings(s) {
-    localStorage.setItem('sawitai_tracker', JSON.stringify(s));
+    try {
+      localStorage.setItem('sawitai_tracker', JSON.stringify(s));
+    } catch (e) {
+      console.warn('Failed to save tracker settings:', e);
+    }
   }
 
   function initSettings() {
@@ -299,11 +327,15 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function saveCurrentSettings() {
-    ApiService.saveSettings({
-      conf: sliderConf.value,
-      iou: sliderIou.value,
-      imgsz: sliderImgsz.value,
-    });
+    try {
+      ApiService.saveSettings({
+        conf: sliderConf.value,
+        iou: sliderIou.value,
+        imgsz: sliderImgsz.value,
+      });
+    } catch (e) {
+      console.warn('Failed to save settings:', e);
+    }
   }
 
   // --- Reset to Defaults ---
@@ -407,11 +439,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isImage) {
       previewImage.classList.remove('hidden');
       previewVideo.classList.add('hidden');
-      previewImage.src = URL.createObjectURL(file);
+      previewImage.src = createObjectURL(file);
     } else {
       previewVideo.classList.remove('hidden');
       previewImage.classList.add('hidden');
-      previewVideo.src = URL.createObjectURL(file);
+      previewVideo.src = createObjectURL(file);
     }
 
     checkApiKey();
@@ -427,10 +459,36 @@ document.addEventListener('DOMContentLoaded', () => {
     previewSection.classList.add('hidden');
     previewImage.classList.add('hidden');
     previewVideo.classList.add('hidden');
+    revokeObjectURL(previewImage.src);
     previewImage.src = '';
+    revokeObjectURL(previewVideo.src);
     previewVideo.src = '';
+    // Cleanup video frame URLs
+    videoFrameImages.forEach(url => revokeObjectURL(url));
+    videoFrameImages = [];
+    videoFrameResults = [];
     hideResults();
     hideError();
+  }
+
+  // Helper to create and track object URLs
+  function createObjectURL(blob) {
+    const url = URL.createObjectURL(blob);
+    objectURLs.add(url);
+    return url;
+  }
+
+  function revokeObjectURL(url) {
+    if (url) {
+      URL.revokeObjectURL(url);
+      objectURLs.delete(url);
+    }
+  }
+
+  // Cleanup all tracked URLs
+  function cleanupObjectURLs() {
+    objectURLs.forEach(url => URL.revokeObjectURL(url));
+    objectURLs.clear();
   }
 
   // --- Loading UI helpers ---
@@ -453,10 +511,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- Video frame extraction ---
   function extractFramesFromVideo(videoEl, numFrames) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
       const duration = videoEl.duration;
+      if (!duration || isNaN(duration)) {
+        reject(new Error('Video duration tidak valid'));
+        return;
+      }
       // Sample evenly spaced frames, skip first/last 0.1s
       const start = 0.1;
       const end = Math.max(duration - 0.1, start + 0.1);
@@ -468,24 +530,48 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const frames = []; // { blob, time }
       let idx = 0;
+      let originalOnSeeked = null;
+
+      function cleanup() {
+        if (originalOnSeeked !== undefined) {
+          videoEl.onseeked = originalOnSeeked;
+        }
+      }
 
       function seekNext() {
         if (idx >= times.length) {
+          cleanup();
           resolve(frames);
           return;
         }
         videoEl.currentTime = times[idx];
       }
 
+      // Store original handler
+      originalOnSeeked = videoEl.onseeked;
+
       videoEl.onseeked = () => {
-        canvas.width = videoEl.videoWidth;
-        canvas.height = videoEl.videoHeight;
-        ctx.drawImage(videoEl, 0, 0);
-        canvas.toBlob((blob) => {
-          frames.push({ blob, time: times[idx] });
-          idx++;
-          seekNext();
-        }, 'image/jpeg', 0.85);
+        try {
+          canvas.width = videoEl.videoWidth;
+          canvas.height = videoEl.videoHeight;
+          ctx.drawImage(videoEl, 0, 0);
+          canvas.toBlob((blob) => {
+            if (blob) {
+              frames.push({ blob, time: times[idx] });
+            }
+            idx++;
+            seekNext();
+          }, 'image/jpeg', 0.85);
+        } catch (err) {
+          cleanup();
+          reject(err);
+        }
+      };
+
+      // Handle video errors
+      videoEl.onerror = () => {
+        cleanup();
+        reject(new Error('Error saat memuat video'));
       };
 
       seekNext();
@@ -541,7 +627,9 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         const allFrameResults = [];
-        const frameImages = []; // store blob URLs for drawing
+        // Cleanup old frame images first
+        videoFrameImages.forEach(url => revokeObjectURL(url));
+        videoFrameImages = []; // store blob URLs for drawing
 
         for (let i = 0; i < frames.length; i++) {
           setLoadingState(
@@ -557,10 +645,10 @@ document.addEventListener('DOMContentLoaded', () => {
           // Track detections — assigns trackId to each detection
           const trackedDetections = tracker.update(detections);
           allFrameResults.push(trackedDetections);
-          frameImages.push(URL.createObjectURL(frames[i].blob));
+          videoFrameImages.push(createObjectURL(frames[i].blob));
         }
 
-        showVideoResults(allFrameResults, frameImages, tracker.getUniqueCount());
+        showVideoResults(allFrameResults, tracker.getUniqueCount());
       }
     } catch (err) {
       showError(err.message || 'Terjadi kesalahan saat menghubungi server.');
@@ -650,8 +738,15 @@ document.addEventListener('DOMContentLoaded', () => {
       // Draw canvas
       const canvas = document.getElementById(`tree-canvas-${i}`);
       if (result) {
-        const imgSrc = URL.createObjectURL(result.file);
-        CanvasRenderer.drawImageWithBoxes(canvas, imgSrc, result.detections);
+        const imgSrc = createObjectURL(result.file);
+        CanvasRenderer.drawImageWithBoxes(canvas, imgSrc, result.detections)
+          .then(() => {
+            // Revoke URL after image is loaded and drawn
+            revokeObjectURL(imgSrc);
+          })
+          .catch(() => {
+            revokeObjectURL(imgSrc);
+          });
         card.classList.remove('hidden');
       } else {
         // No image for this side
@@ -709,16 +804,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const count = detections.length;
     detectionCount.textContent = `${count} tandan terdeteksi`;
 
-    const imgSrc = URL.createObjectURL(selectedFile);
-    CanvasRenderer.drawImageWithBoxes(resultCanvas, imgSrc, detections);
+    const imgSrc = createObjectURL(selectedFile);
+    CanvasRenderer.drawImageWithBoxes(resultCanvas, imgSrc, detections)
+      .then(() => {
+        revokeObjectURL(imgSrc);
+      })
+      .catch(() => {
+        revokeObjectURL(imgSrc);
+      });
     fillDetectionTable(detections);
   }
 
-  let videoFrameImages = [];
-
-  function showVideoResults(frames, frameImageUrls, uniqueCount) {
+  function showVideoResults(frames, uniqueCount) {
     videoFrameResults = frames;
-    videoFrameImages = frameImageUrls || [];
     videoUniqueCount = uniqueCount || 0;
     currentFrameIndex = 0;
 
@@ -760,20 +858,31 @@ document.addEventListener('DOMContentLoaded', () => {
     // Draw from extracted frame image
     if (videoFrameImages[currentFrameIndex]) {
       CanvasRenderer.drawImageWithBoxes(videoResultCanvas, videoFrameImages[currentFrameIndex], detections);
+      return;
+    }
+
+    // Fallback: seek video
+    const video = previewVideo;
+    // Clear any existing handler first
+    video.onseeked = null;
+
+    if (!video.duration || videoFrameResults.length <= 1) return;
+
+    const timePerFrame = video.duration / videoFrameResults.length;
+    const targetTime = currentFrameIndex * timePerFrame;
+
+    // Set handler before seeking
+    video.onseeked = () => {
+      CanvasRenderer.drawVideoFrameWithBoxes(videoResultCanvas, video, detections);
+      video.onseeked = null;
+    };
+
+    // Only seek if we're not already at the right time
+    if (Math.abs(video.currentTime - targetTime) > 0.1) {
+      video.currentTime = targetTime;
     } else {
-      // Fallback: seek video
-      const video = previewVideo;
-      if (video.duration && videoFrameResults.length > 1) {
-        const timePerFrame = video.duration / videoFrameResults.length;
-        video.currentTime = currentFrameIndex * timePerFrame;
-      }
-      video.onseeked = () => {
-        CanvasRenderer.drawVideoFrameWithBoxes(videoResultCanvas, video, detections);
-        video.onseeked = null;
-      };
-      if (video.readyState >= 2) {
-        CanvasRenderer.drawVideoFrameWithBoxes(videoResultCanvas, video, detections);
-      }
+      // Already at the right time, draw immediately
+      CanvasRenderer.drawVideoFrameWithBoxes(videoResultCanvas, video, detections);
     }
   }
 
@@ -914,4 +1023,13 @@ document.addEventListener('DOMContentLoaded', () => {
     div.textContent = str;
     return div.innerHTML;
   }
+
+  // Cleanup on page unload
+  window.addEventListener('beforeunload', () => {
+    cleanupObjectURLs();
+    revokeObjectURL(previewImage.src);
+    revokeObjectURL(previewVideo.src);
+    treeSlotURLs.forEach(url => revokeObjectURL(url));
+    videoFrameImages.forEach(url => revokeObjectURL(url));
+  });
 });

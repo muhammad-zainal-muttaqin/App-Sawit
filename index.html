@@ -190,8 +190,22 @@
       </div>
     </div>
 
-    <!-- Upload -->
-    <section class="upload-section">
+    <!-- Mode Toggle -->
+    <section class="mode-toggle">
+      <div class="mode-toggle__inner">
+        <button id="btn-mode-single" class="mode-btn mode-btn--active" data-mode="single">
+          <span class="mode-btn__icon">🖼️</span>
+          <span class="mode-btn__label">Satu File</span>
+        </button>
+        <button id="btn-mode-tree" class="mode-btn" data-mode="tree">
+          <span class="mode-btn__icon">🌳</span>
+          <span class="mode-btn__label">1 Pohon (4 Sisi)</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Single File Upload -->
+    <section id="upload-single" class="upload-section">
       <div id="upload-zone" class="upload">
         <div class="upload__border"></div>
         <div class="upload__content">
@@ -215,6 +229,71 @@
         </div>
         <input type="file" id="file-input" class="sr-only" accept="image/*,video/*">
       </div>
+    </section>
+
+    <!-- Tree Multi-Upload (4 Sides) -->
+    <section id="upload-tree" class="upload-tree hidden">
+      <div class="tree-header">
+        <div class="tree-id-input">
+          <label for="tree-id">ID Pohon (opsional)</label>
+          <input type="text" id="tree-id" class="input input--dark" placeholder="Contoh: P001">
+        </div>
+        <p class="tree-hint">Upload 4 foto pohon dari sudut berbeda (~90° tiap foto)</p>
+      </div>
+      <div class="tree-slots">
+        <div class="tree-slot" data-side="0" data-label="Depan (0°)">
+          <div class="tree-slot__content">
+            <span class="tree-slot__icon">📸</span>
+            <span class="tree-slot__label">Depan</span>
+            <span class="tree-slot__angle">0°</span>
+          </div>
+          <div class="tree-slot__preview hidden">
+            <img class="tree-slot__img" alt="Preview">
+            <button class="tree-slot__remove" title="Hapus">&times;</button>
+          </div>
+          <input type="file" class="tree-slot__input sr-only" accept="image/*" data-side="0">
+        </div>
+        <div class="tree-slot" data-side="1" data-label="Kanan (90°)">
+          <div class="tree-slot__content">
+            <span class="tree-slot__icon">📸</span>
+            <span class="tree-slot__label">Kanan</span>
+            <span class="tree-slot__angle">90°</span>
+          </div>
+          <div class="tree-slot__preview hidden">
+            <img class="tree-slot__img" alt="Preview">
+            <button class="tree-slot__remove" title="Hapus">&times;</button>
+          </div>
+          <input type="file" class="tree-slot__input sr-only" accept="image/*" data-side="1">
+        </div>
+        <div class="tree-slot" data-side="2" data-label="Belakang (180°)">
+          <div class="tree-slot__content">
+            <span class="tree-slot__icon">📸</span>
+            <span class="tree-slot__label">Belakang</span>
+            <span class="tree-slot__angle">180°</span>
+          </div>
+          <div class="tree-slot__preview hidden">
+            <img class="tree-slot__img" alt="Preview">
+            <button class="tree-slot__remove" title="Hapus">&times;</button>
+          </div>
+          <input type="file" class="tree-slot__input sr-only" accept="image/*" data-side="2">
+        </div>
+        <div class="tree-slot" data-side="3" data-label="Kiri (270°)">
+          <div class="tree-slot__content">
+            <span class="tree-slot__icon">📸</span>
+            <span class="tree-slot__label">Kiri</span>
+            <span class="tree-slot__angle">270°</span>
+          </div>
+          <div class="tree-slot__preview hidden">
+            <img class="tree-slot__img" alt="Preview">
+            <button class="tree-slot__remove" title="Hapus">&times;</button>
+          </div>
+          <input type="file" class="tree-slot__input sr-only" accept="image/*" data-side="3">
+        </div>
+      </div>
+      <button id="btn-detect-tree" class="btn btn--primary btn--lg btn--full" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+        <span>Deteksi 4 Sisi</span>
+      </button>
     </section>
 
     <!-- Preview -->
@@ -270,10 +349,69 @@
         </button>
       </div>
 
-      <!-- Image Result -->
+      <!-- Image Result (Single Mode) -->
       <div id="image-result" class="hidden">
         <div class="card card--flush">
           <canvas id="result-canvas"></canvas>
+        </div>
+      </div>
+
+      <!-- Tree Results (4 Sides) -->
+      <div id="tree-result" class="hidden">
+        <div id="tree-summary" class="tree-summary hidden">
+          <div class="tree-summary__header">
+            <h3 class="tree-summary__title">Ringkasan Pohon</h3>
+            <span id="tree-id-display" class="tree-summary__id"></span>
+          </div>
+          <div class="tree-summary__stats">
+            <div class="stat">
+              <span id="tree-total-detections" class="stat__value">0</span>
+              <span class="stat__label">Total Deteksi (4 sisi)</span>
+            </div>
+            <div class="stat stat--pending">
+              <span id="tree-unique-count" class="stat__value">-</span>
+              <span class="stat__label">Estimasi Tandan Unik*</span>
+            </div>
+          </div>
+          <p class="tree-summary__note">*Estimasi unik memerlukan deduplication antar sisi (Phase 3)</p>
+        </div>
+        <div class="tree-results__grid">
+          <div class="tree-result-card" data-side="0">
+            <div class="tree-result-card__header">
+              <span class="tree-result-card__side">Depan (0°)</span>
+              <span class="tree-result-card__count">0 tandan</span>
+            </div>
+            <div class="card card--flush">
+              <canvas id="tree-canvas-0"></canvas>
+            </div>
+          </div>
+          <div class="tree-result-card" data-side="1">
+            <div class="tree-result-card__header">
+              <span class="tree-result-card__side">Kanan (90°)</span>
+              <span class="tree-result-card__count">0 tandan</span>
+            </div>
+            <div class="card card--flush">
+              <canvas id="tree-canvas-1"></canvas>
+            </div>
+          </div>
+          <div class="tree-result-card" data-side="2">
+            <div class="tree-result-card__header">
+              <span class="tree-result-card__side">Belakang (180°)</span>
+              <span class="tree-result-card__count">0 tandan</span>
+            </div>
+            <div class="card card--flush">
+              <canvas id="tree-canvas-2"></canvas>
+            </div>
+          </div>
+          <div class="tree-result-card" data-side="3">
+            <div class="tree-result-card__header">
+              <span class="tree-result-card__side">Kiri (270°)</span>
+              <span class="tree-result-card__count">0 tandan</span>
+            </div>
+            <div class="card card--flush">
+              <canvas id="tree-canvas-3"></canvas>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -311,8 +449,9 @@
         <div class="table-wrap">
           <table class="table">
             <thead>
-              <tr>
+              <tr id="table-header-row">
                 <th>#</th>
+                <th id="col-side" class="hidden">Sisi</th>
                 <th>Track ID</th>
                 <th>Kelas</th>
                 <th>Confidence</th>

@@ -39,14 +39,32 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnNextFrame = document.getElementById('btn-next-frame');
   const frameIndicator = document.getElementById('frame-indicator');
 
+  // --- Mode Toggle Elements ---
+  const btnModeSingle = document.getElementById('btn-mode-single');
+  const btnModeTree = document.getElementById('btn-mode-tree');
+  const uploadSingle = document.getElementById('upload-single');
+  const uploadTree = document.getElementById('upload-tree');
+  const treeIdInput = document.getElementById('tree-id');
+  const treeSlots = document.querySelectorAll('.tree-slot');
+  const btnDetectTree = document.getElementById('btn-detect-tree');
+  const treeResult = document.getElementById('tree-result');
+  const colSide = document.getElementById('col-side');
+
   let selectedFile = null;
   let isImage = false;
   let videoFrameResults = [];
   let currentFrameIndex = 0;
   let videoUniqueCount = 0;
 
+  // Tree mode state
+  let currentMode = 'single'; // 'single' | 'tree'
+  const treeFiles = [null, null, null, null]; // [side0, side1, side2, side3]
+  const treeResults = [null, null, null, null]; // detection results per side
+
   const DEFAULTS = { conf: 0.25, iou: 0.45, imgsz: 640 };
   const TRACKER_DEFAULTS = { trackConf: 0.40, nmsIou: 0.40, maxDist: 8, maxAge: 5, minHits: 2 };
+
+  const SIDE_LABELS = ['Depan (0°)', 'Kanan (90°)', 'Belakang (180°)', 'Kiri (270°)'];
 
   const btnResetSettings = document.getElementById('btn-reset-settings');
 
@@ -84,6 +102,84 @@ document.addEventListener('DOMContentLoaded', () => {
   btnSettings.addEventListener('click', openSettings);
   btnCloseSettings.addEventListener('click', closeSettings);
   overlay.addEventListener('click', closeSettings);
+
+  // --- Mode Toggle ---
+  function setMode(mode) {
+    currentMode = mode;
+    if (mode === 'single') {
+      btnModeSingle.classList.add('mode-btn--active');
+      btnModeTree.classList.remove('mode-btn--active');
+      uploadSingle.classList.remove('hidden');
+      uploadTree.classList.add('hidden');
+      resetTreeFiles();
+    } else {
+      btnModeTree.classList.add('mode-btn--active');
+      btnModeSingle.classList.remove('mode-btn--active');
+      uploadTree.classList.remove('hidden');
+      uploadSingle.classList.add('hidden');
+      resetFile();
+    }
+    hideResults();
+    hideError();
+  }
+
+  btnModeSingle.addEventListener('click', () => setMode('single'));
+  btnModeTree.addEventListener('click', () => setMode('tree'));
+
+  // --- Tree Upload Handling ---
+  function updateTreeSlot(sideIndex, file) {
+    treeFiles[sideIndex] = file;
+    const slot = treeSlots[sideIndex];
+    const preview = slot.querySelector('.tree-slot__preview');
+    const img = slot.querySelector('.tree-slot__img');
+
+    if (file) {
+      slot.classList.add('has-file');
+      preview.classList.remove('hidden');
+      img.src = URL.createObjectURL(file);
+    } else {
+      slot.classList.remove('has-file');
+      preview.classList.add('hidden');
+      img.src = '';
+    }
+
+    updateDetectTreeButton();
+  }
+
+  function updateDetectTreeButton() {
+    const hasAtLeastOne = treeFiles.some(f => f !== null);
+    btnDetectTree.disabled = !hasAtLeastOne || !ApiService.hasApiKey();
+  }
+
+  function resetTreeFiles() {
+    for (let i = 0; i < 4; i++) {
+      updateTreeSlot(i, null);
+    }
+    treeIdInput.value = '';
+  }
+
+  // Tree slot click handlers
+  treeSlots.forEach((slot, index) => {
+    const input = slot.querySelector('.tree-slot__input');
+    const removeBtn = slot.querySelector('.tree-slot__remove');
+
+    slot.addEventListener('click', (e) => {
+      if (e.target === removeBtn || e.target.closest('.tree-slot__remove')) return;
+      input.click();
+    });
+
+    input.addEventListener('change', () => {
+      if (input.files.length > 0) {
+        updateTreeSlot(index, input.files[0]);
+      }
+    });
+
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      updateTreeSlot(index, null);
+      input.value = '';
+    });
+  });
 
   function getTrackerSettings() {
     try {
@@ -257,9 +353,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (ApiService.hasApiKey()) {
       apikeyWarning.classList.add('hidden');
       btnDetect.disabled = false;
+      updateDetectTreeButton();
     } else {
       apikeyWarning.classList.remove('hidden');
       btnDetect.disabled = true;
+      if (btnDetectTree) btnDetectTree.disabled = true;
     }
   }
 
@@ -471,6 +569,119 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // --- Tree Detection (4 Sides) ---
+  btnDetectTree.addEventListener('click', async () => {
+    const filesToProcess = treeFiles.map((f, i) => f ? { file: f, side: i } : null).filter(Boolean);
+
+    if (filesToProcess.length === 0) {
+      showError('Upload minimal 1 foto untuk mulai deteksi.');
+      return;
+    }
+    if (!ApiService.hasApiKey()) {
+      showError('API key belum diatur. Buka pengaturan untuk memasukkan API key.');
+      return;
+    }
+
+    showLoading();
+    hideResults();
+    hideError();
+
+    // Clear previous tree results
+    treeResults.fill(null);
+
+    try {
+      setLoadingState('Mendeteksi tandan...', `Memproses 0 / ${filesToProcess.length} sisi`, 0);
+
+      for (let i = 0; i < filesToProcess.length; i++) {
+        const { file, side } = filesToProcess[i];
+        const sideLabel = SIDE_LABELS[side];
+
+        setLoadingState(
+          'Mendeteksi tandan...',
+          `${sideLabel} (${i + 1} / ${filesToProcess.length})`,
+          Math.round((i / filesToProcess.length) * 100)
+        );
+
+        const result = await ApiService.predict(file);
+        const detections = parseDetections(result);
+        treeResults[side] = { file, detections };
+      }
+
+      setLoadingState('Menyiapkan hasil...', 'Selesai', 100);
+      showTreeResults();
+    } catch (err) {
+      showError(err.message || 'Terjadi kesalahan saat menghubungi server.');
+    } finally {
+      hideLoading();
+    }
+  });
+
+  function showTreeResults() {
+    resultsSection.classList.remove('hidden');
+    imageResult.classList.add('hidden');
+    videoResult.classList.add('hidden');
+    treeResult.classList.remove('hidden');
+    if (colSide) colSide.classList.remove('hidden');
+
+    const treeId = treeIdInput.value.trim();
+    const treeIdDisplay = document.getElementById('tree-id-display');
+    const treeSummary = document.getElementById('tree-summary');
+
+    if (treeId) {
+      treeIdDisplay.textContent = treeId;
+      treeSummary.classList.remove('hidden');
+    } else {
+      treeIdDisplay.textContent = '';
+      treeSummary.classList.add('hidden');
+    }
+
+    // Calculate total detections
+    let totalDetections = 0;
+    for (let i = 0; i < 4; i++) {
+      const result = treeResults[i];
+      const count = result ? result.detections.length : 0;
+      totalDetections += count;
+
+      // Update count in card header
+      const card = document.querySelector(`.tree-result-card[data-side="${i}"]`);
+      const countEl = card.querySelector('.tree-result-card__count');
+      countEl.textContent = `${count} tandan`;
+
+      // Draw canvas
+      const canvas = document.getElementById(`tree-canvas-${i}`);
+      if (result) {
+        const imgSrc = URL.createObjectURL(result.file);
+        CanvasRenderer.drawImageWithBoxes(canvas, imgSrc, result.detections);
+        card.classList.remove('hidden');
+      } else {
+        // No image for this side
+        card.classList.add('hidden');
+      }
+    }
+
+    // Update summary stats
+    document.getElementById('tree-total-detections').textContent = totalDetections;
+
+    // For now, unique count is not calculated (Phase 3)
+    // Just show a placeholder
+    document.getElementById('tree-unique-count').textContent = '-';
+
+    // Update main count text
+    const filledSides = treeResults.filter(r => r !== null).length;
+    detectionCount.textContent = `${totalDetections} tandan dari ${filledSides} sisi`;
+
+    // Fill table with combined detections (all sides)
+    const allDetections = [];
+    treeResults.forEach((result, side) => {
+      if (result) {
+        result.detections.forEach(det => {
+          allDetections.push({ ...det, sideLabel: SIDE_LABELS[side] });
+        });
+      }
+    });
+    fillDetectionTable(allDetections);
+  }
+
   function parseDetections(result) {
     if (result && result.images && Array.isArray(result.images)) {
       return result.images[0].results || result.images[0].detections || [];
@@ -492,6 +703,8 @@ document.addEventListener('DOMContentLoaded', () => {
     resultsSection.classList.remove('hidden');
     imageResult.classList.remove('hidden');
     videoResult.classList.add('hidden');
+    if (treeResult) treeResult.classList.add('hidden');
+    if (colSide) colSide.classList.add('hidden');
 
     const count = detections.length;
     detectionCount.textContent = `${count} tandan terdeteksi`;
@@ -512,6 +725,8 @@ document.addEventListener('DOMContentLoaded', () => {
     resultsSection.classList.remove('hidden');
     imageResult.classList.add('hidden');
     videoResult.classList.remove('hidden');
+    if (treeResult) treeResult.classList.add('hidden');
+    if (colSide) colSide.classList.add('hidden');
 
     // Update summary stats
     document.getElementById('unique-count').textContent = videoUniqueCount;
@@ -587,8 +802,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function fillDetectionTable(detections) {
     detectionTableBody.innerHTML = '';
+    const hasSideLabels = detections.some(d => d.sideLabel !== undefined);
+    const colspan = hasSideLabels ? 6 : 5;
     if (!detections.length) {
-      detectionTableBody.innerHTML = '<tr><td colspan="5" style="padding:2rem;text-align:center;color:var(--c-text-dim);">Tidak ada tandan terdeteksi</td></tr>';
+      detectionTableBody.innerHTML = `<tr><td colspan="${colspan}" style="padding:2rem;text-align:center;color:var(--c-text-dim);">Tidak ada tandan terdeteksi</td></tr>`;
       return;
     }
 
@@ -607,10 +824,12 @@ document.addEventListener('DOMContentLoaded', () => {
         ? CanvasRenderer.getTrackColor(det.trackId)
         : CanvasRenderer.getColor(i % 10);
       const trackIdDisplay = det.trackId !== undefined ? `#${det.trackId}` : '-';
+      const sideLabel = det.sideLabel ? `<span class="tag" style="font-size:0.7rem">${escapeHtml(det.sideLabel)}</span>` : '';
 
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td class="mono">${i + 1}</td>
+        ${hasSideLabels ? `<td>${sideLabel}</td>` : ''}
         <td class="mono">${trackIdDisplay}</td>
         <td><div class="cell-class"><span class="color-dot" style="background:${color}"></span>${escapeHtml(name)}</div></td>
         <td><span class="conf-bar"><span class="conf-fill" style="width:${confPct}%;background:${color}"></span></span><span class="mono">${confPct}%</span></td>
@@ -622,7 +841,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- Download ---
   btnDownload.addEventListener('click', async () => {
-    const canvas = imageResult.classList.contains('hidden') ? videoResultCanvas : resultCanvas;
+    let canvas;
+    if (!treeResult.classList.contains('hidden')) {
+      // Tree mode: download first visible result
+      for (let i = 0; i < 4; i++) {
+        const c = document.getElementById(`tree-canvas-${i}`);
+        if (c && !c.closest('.tree-result-card').classList.contains('hidden')) {
+          canvas = c;
+          break;
+        }
+      }
+    } else if (!videoResult.classList.contains('hidden')) {
+      canvas = videoResultCanvas;
+    } else {
+      canvas = resultCanvas;
+    }
+
+    if (!canvas) return;
     const blob = await CanvasRenderer.canvasToBlob(canvas);
     if (!blob) return;
 
@@ -638,15 +873,18 @@ document.addEventListener('DOMContentLoaded', () => {
   function showLoading() {
     loadingSection.classList.remove('hidden');
     btnDetect.disabled = true;
+    if (btnDetectTree) btnDetectTree.disabled = true;
     setLoadingState();
   }
 
   function hideLoading() {
     loadingSection.classList.add('hidden');
     btnDetect.disabled = false;
+    if (btnDetectTree) btnDetectTree.disabled = false;
     loadingProgress.classList.add('hidden');
     loadingProgressBar.style.width = '0%';
     checkApiKey();
+    updateDetectTreeButton();
   }
 
   function showError(msg) {
@@ -662,6 +900,7 @@ document.addEventListener('DOMContentLoaded', () => {
     resultsSection.classList.add('hidden');
     imageResult.classList.add('hidden');
     videoResult.classList.add('hidden');
+    if (treeResult) treeResult.classList.add('hidden');
   }
 
   function formatFileSize(bytes) {
